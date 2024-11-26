@@ -1,0 +1,20 @@
+<!DOCTYPE html>
+<meta http-equiv="refresh" content="1">
+<html>
+    <body>
+
+        <h1>Neopixel Control</h1>
+
+        <p>Click a Button.</p>
+        <form>
+            <p>
+            <a href="http://aaaaa/start_tree"><input type="button" value=" Start Starter Tree "> </a><br>
+            <a href="http://aaaaa/restart_tree"><input type="button" value=" Restart Starter Tree"> </a><br>
+            <label for="starter_tree">Starter Tree Status:</label> <meter id="starter_tree" value="vStatus"> </meter>
+            </p>
+        </form>
+
+    </body>
+</html>
+
+
