@@ -5,6 +5,23 @@ from usb.device.midi import MIDIInterface
 import time
 from collections import deque
 
+delta_key_stack = deque([[1,250]],200)
+
+delta_key_stack.append([1,250])
+delta_key_stack.append([3,200])
+delta_key_stack.append([1,0])
+delta_key_stack.append([0,0])
+delta_key_stack.append([3,0])
+delta_key_stack.append([1,250])
+delta_key_stack.append([3,200])
+delta_key_stack.append([1,0])
+delta_key_stack.append([0,0])
+delta_key_stack.append([3,0])
+delta_key_stack.append([3,200])
+delta_key_stack.append([1,0])
+delta_key_stack.append([0,0])
+delta_key_stack.append([3,0])
+
 
 #---------------------IO Definitions------------------------------
 spkr = Pin(13,Pin.OUT)
@@ -18,7 +35,6 @@ _CIN_POLY_KEYPRESS = const(0xA)
 
 N = const(7)
 
-global delta_key_stack
 
 #delta_key_stack.popleft()
 previous_state = ([0] * N)
@@ -56,5 +72,6 @@ control_val = 0
 
 while True:
     UpdateMIDI()
-    time.sleep(2)
+    time.sleep(1)
+
 
