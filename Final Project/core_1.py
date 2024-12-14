@@ -1,173 +1,122 @@
-def main(key_scaled_state, N = 7):
+from machine import Pin, ADC, PWM
+from micropython import const
+import usb.device
+from usb.device.midi import MIDIInterface
+import time
+from collections import deque
 
-    from micropython import const
-    from rp2 import PIO, DMA, asm_pio, StateMachine
-    import time
-    from machine import Pin
+delta_key_stack = deque([[1,250]],200)
+"""
+delta_key_stack.append([1,250])
+delta_key_stack.append([3,200])
+delta_key_stack.append([1,0])
+delta_key_stack.append([0,0])
+delta_key_stack.append([3,0])
+delta_key_stack.append([1,250])
+delta_key_stack.append([3,200])
+delta_key_stack.append([1,0])
+delta_key_stack.append([0,0])
+delta_key_stack.append([3,0])
+delta_key_stack.append([3,200])
+delta_key_stack.append([1,0])
+delta_key_stack.append([0,0])
+delta_key_stack.append([3,0])
+"""
+#---------------------IO Definitions------------------------------
+a2d2 = ADC(2)
+led = Pin(25, Pin.OUT)
+Spkr = PWM(Pin(11))
 
+midi = MIDIInterface()
 
-    #make a custom data type array for key states
+#---------------------Definitions------------------------------
 
-    #─────[ IO Definitions ]────────────────────────────────────
+_MIDI_POLY_KEYPRESS = const(0xA0)
+_CIN_POLY_KEYPRESS = const(0xA)
 
-    key1 = Pin(15,Pin.IN,Pin.PULL_UP)
-    key2 = Pin(14,Pin.IN,Pin.PULL_UP)
-    led = Pin(25, Pin.OUT)
+N = const(7)
+last_state = ([0]*N)
+previous_state = ([0]*N)
 
-    wave_start = Pin(18,Pin.OUT)
-    wave1 = Pin(19,Pin.IN)
-    wave2 = Pin(20,Pin.IN)
-    wave3 = Pin(21,Pin.IN)
-
-    wave_start.value(1)
-
-    #─────[ Register Definitions ]────────────────────────────────────
-        #DREQ's gotten from rp2040 datasheet 2.5.3
-    SIZE_BYTE       = const(0)
-    DREQ_PIO0_TX0   = const(0)
-    DREQ_PIO0_TX1   = const(1)
-    DREQ_PIO0_TX2   = const(2)
-    DREQ_PIO0_TX3   = const(3)
-    DREQ_PIO0_RX0   = const(4)
-    DREQ_PIO0_RX1   = const(5)
-    DREQ_PIO0_RX2   = const(6)
-    DREQ_PIO0_RX3   = const(7)
-
-        #PIO Register List for DMA pointer gotten from rp2040 datasheet 3.7 (not needed with new DMA library)
-    PIO0_BASE   = const(0x50200000)
-    PIO1_BASE   = const(0x50300000)
-    RXF0        = const(0x010)
-    RXF1        = const(0x014)
-    RXF2        = const(0x018)
-    RXF3        = const(0x01c)
-    TXF0        = const(0x020)
-    TXF1        = const(0x024)
-    TXF2        = const(0x028)
-    TXF3        = const(0x02c)
-
-    #─────[ Variable Definitions ]────────────────────────────────────
-
-
-    #─────[ PIO Code ]────────────────────────────────────
-        #reference https://docs.micropython.org/en/v1.18/library/rp2.StateMachine.html
-    @asm_pio()
-    def keys_in():
-        wrap_target()
-        pull()
-        mov(y, osr)                 # y = Number of keys
-        wait(0,pin,0)               # skip first pulse
-
-        label("loop_not_zero")      # 
-        mov(x, 0b10111)                 # reset x = 0b0000_0000_0000_0000
-        mov(x, 0xffffffff)                 # reset x = 0b0000_0000_0000_0000
-        wait(0,pin,0)               # wait for wave_start to go low
-        
-        label("loop")               # 
-        jmp(pin,"loop_high")        # when wave pin is high, stop counting 
-        jmp(x_dec,"loop")           # else count down and loop
-        jmp("loop_high")            # loop again 
-        
-        label("loop_high")          # 
-        in_(x, 32)                  # Copy 8 bits of counter into ISR
-        push()                      # push isr to pio_rx
-        jmp(y_dec,"loop_not_zero")  # if y is not 0, decrease key count
-        wrap()
-
-    #─────[ Prepare state machine and start it ]────────────────────────────────────
-        #reference https://docs.micropython.org/en/latest/library/rp2.DMA.html
-    sm0 = StateMachine(0,keys_in, freq=1_000_000, set_base=wave_start, in_base=wave_start, jmp_pin=wave1)
-    #sm0.active(1)
-
-    #─────[ Allocate array to store data ]──────────────────────────────────────────
-
-    #N = const(7)
-
-    #global N
-    dst = bytearray(N)
-    key_time = bytearray([0] * N)
-    key_time_min = ([255] * N)
-    key_time_max = ([0] * N)
-    key_scale_array = ([1] * N)
-
-    #key_scaled_state = ([0] * N)
-    #previous_state = ([0] * N)
-
-    #delta_key_stack = ([0,0])
-    #global delta_key_stack
-
-
-    #─────[ Prepare DMA for PIO to memory transfer ]────────────────────────────────
-    #startDMA
-    dma = DMA()
-    control = dma.pack_ctrl(inc_read=False, inc_write=True, size=SIZE_BYTE, bswap=1, treq_sel=DREQ_PIO0_RX0, irq_quiet = 0)
-    dma.config(read=sm0,
-               write=dst,
-               ctrl=control)
-
-    #─────[ Update Array Data ]────────────────────────────────────
-    def UpdateKeyboard(key_time, key_scaled_state):
-        #print("key_time", key_time) 
-        for i in (range(0,N)):
-            if ((key_time[i] == 0) or (key_time[i] == 255)):   #leave if in invalid space
-                break 
-            if ((key_time[i] < key_time_min[i]) and (key_time[i] > 20)):   #update min
-                key_time_min[i] = key_time[i]
-                key_scale_array[i] = (key_time_max[i] - key_time_min[i])+1
-
-            if (key_time[i] > key_time_max[i]):   #update max
-                key_time_max[i] = key_time[i]
-                key_scale_array[i] = (key_time_max[i] - key_time_min[i])+1
-
-            #print("scale",key_scale_array)
-            if key_scale_array[i] > 10:
-                key_scaled_state[i] = int( (key_time[i]-key_time_min[i]) * 256 / key_scale_array[i])
-
-        #print("max",key_time_max)
-        #print("min",key_time_min)
-        #print("key_scale", key_scale_array) 
-        #print("scaled_key", key_scaled_state)
-
-
-    #─────[ Start DMA and start PIO ]──────────────────────────────────────
-    def ReadKeyboard():
-        #print("starting PIO")
-        sm0.restart()
-        i = sm0.rx_fifo()
-        while(i>0):             #throw out last pio fifo data
-            #print(i)
-            sm0.get()
-            i = i-1
-        sm0.put(N)
-        time.sleep(0.01) #needs delay for put to work
-        sm0.active(True)
-        #print("starting DMA")
-        dma.config(write=dst,count=N)
-        time.sleep(0.01)
-        dma.active(True)
-        time.sleep(0.01)
-        wave_start.value(0)
-    #    time.sleep(0.01)
-    #    if(dma.active() == 0):
-    #        dma.close
-
-#─────[ Main ]────────────────────────────────────
-    while True:
-        ReadKeyboard()
-        #print(sm0.rx_fifo())
-        #print([x for x in dst], sm0.active(), dma.active())
-        #print(dst, sm0.active(), dma.active())
-        UpdateKeyboard(key_time,key_scaled_state)
-        key_time = [x for x in dst]       #using something called a List Comprehension   (https://docs.python.org/3.6/tutorial/datastructures.html#)
-        i = 0
-        while (dma.active() == 1 and i < 100):
-            time.sleep_ms(1)
-            i = i+1
-        #print(key_time)
-        wave_start.value(1)
-        time.sleep(0.001)
+    
+#---------------------Midi Update-------------------------
+def make_stack(key_scaled_state):
+    i = len(key_scaled_state)
+    while i>0:
+        i = i-1
+        if (key_scaled_state[i] < 0):
+            key_scaled_state[i] = 0
+        if ( (previous_state[i] != 1) and (key_scaled_state[i] > (120)) ):     #add key_on to queue if not already on
+            previous_state[i] = 1
+            delta_key_stack.append([i,key_scaled_state[i]])
+            
+        elif( (previous_state[i] != 0) and (key_scaled_state[i] < (120)) ):     #add key_off to queue if not already off
+            previous_state[i] = 0
+            delta_key_stack.append([i,0])
 
 
 
+def UpdateMIDI():
 
+    if ( len(delta_key_stack) > 0 ):
+        CHANNEL = 0
+        key = delta_key_stack.popleft()
+        i = key[0]
+        key_volume = int(key[1])    #using a list as a queue
+        if (i<0):
+            pass
+        elif ((last_state[i] == 0) and (key_volume != 0)):
+            last_state[i] = 1
+            print("on", key)
+            midi.note_on(CHANNEL, i, (a2d2.read_u16() >> 9))
+            led.value(1)
+
+            
+        elif ((last_state[i] == 1) and (key_volume == 0)):
+            last_state[i] = 0
+            print("off", key)
+            midi.note_off(CHANNEL, i)
+            led.value(0)
+        #else:
+            #midi.send_event(_CIN_POLY_KEYPRESS, _MIDI_POLY_KEYPRESS| CHANNEL, i, vel)
+
+#---------------------Code Start-------------------------
+
+
+# Remove builtin_driver=True if you don't want the MicroPython serial REPL available.
+usb.device.get().init(midi, builtin_driver=True)
+
+# TX constants
+CHANNEL = 0
+PITCH = 60
+CONTROLLER = 64
+
+control_val = 0
+print("init")
+
+def main(key_scaled_state):
+#    while not midi.is_open():
+    while not midi.is_open():
+        try:
+            i = max(key_scaled_state)
+            print("key is ",key_scaled_state.index(i))
+            if (i < 110):
+                print("no keys")
+                Spkr.duty_u16(0)
+            else:
+                freq = 200+(40*key_scaled_state.index(i))
+                Spkr.freq(freq)
+                Spkr.duty_u16(32768)
+            time.sleep_ms(100)
+        except:
+            pass
+
+    #print("Starting MIDI loop...")
+    while midi.is_open():
+        Spkr.duty_u16(0)
+        #print("scaled_key", key_scaled_state, previous_state)
+        make_stack(key_scaled_state)
+        UpdateMIDI()
+        time.sleep(0.1)
 
 
